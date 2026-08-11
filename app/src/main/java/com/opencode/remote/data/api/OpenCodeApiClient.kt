@@ -357,6 +357,8 @@ class OConnectorApiClient @Inject constructor(
      * Strategy:
      *   1. GET /project → discover all known projects
      *   2. For normal projects (real worktree): GET /session?list&directory=<worktree>
+     *      — also query every sandbox path: the stored worktree may be stale (e.g. the
+     *        directory was moved to another drive) while sessions live under a sandbox.
      *   3. For global project (worktree="/"): GET /session?list&directory=/&scope=project
      *      — scope=project skips directory matching, returns ALL sessions for that project_id
      *   4. Merge and deduplicate all results
@@ -381,7 +383,12 @@ class OConnectorApiClient @Inject constructor(
                                 // scope=project skips directory filter, returns all sessions for this project_id
                                 listSessions(directory = project.worktree ?: "/", scope = "project")
                             } else {
-                                listSessions(directory = project.worktree)
+                                // Query the worktree AND every sandbox path. The stored worktree may
+                                // point to a moved/removed location (e.g. another drive), while the
+                                // sessions actually live under a sandbox path. Overlapping results
+                                // are deduplicated below by session id.
+                                val directories = (listOfNotNull(project.worktree) + project.sandboxes).distinct()
+                                directories.flatMap { dir -> listSessions(directory = dir) }
                             }
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to load sessions for project ${project.id} (${project.worktree}): ${e.message}")
