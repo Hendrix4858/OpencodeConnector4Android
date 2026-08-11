@@ -108,7 +108,7 @@ data class QuestionInfoDto(
     val header: String? = null,
     val options: List<QuestionOptionDto> = emptyList(),
     val multiple: Boolean = false,
-    val custom: Boolean = false,
+    val custom: Boolean = true,
 )
 
 /** Reply payload for POST /permission/:id/reply */

@@ -125,6 +125,7 @@ internal fun QuestionAskBubble(
                                     setOf(option.label)
                                 }
                                 selectedOptionsList[currentIndex].value = newSet
+                                customAnswerList[currentIndex].value = ""
                             },
                             label = {
                                 Column {
@@ -147,9 +148,20 @@ internal fun QuestionAskBubble(
             // Custom text input
             if (question.custom) {
                 Spacer(Modifier.height(8.dp))
+                Text(
+                    s.questionCustomLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.height(4.dp))
                 OutlinedTextField(
                     value = customAnswer,
-                    onValueChange = { customAnswerList[currentIndex].value = it },
+                    onValueChange = {
+                        customAnswerList[currentIndex].value = it
+                        if (it.isNotEmpty()) {
+                            selectedOptionsList[currentIndex].value = emptySet()
+                        }
+                    },
                     placeholder = { Text(s.questionCustomPlaceholder) },
                     modifier = Modifier.fillMaxWidth(),
                     maxLines = 3,
