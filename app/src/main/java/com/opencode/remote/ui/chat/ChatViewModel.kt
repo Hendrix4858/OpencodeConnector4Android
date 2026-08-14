@@ -321,14 +321,14 @@ class ChatViewModel @Inject constructor(
                     streamingWatchdogJob?.cancel()
                     synchronized(pendingDeltas) { pendingDeltas.clear() }
                     repository.clearStreaming()
-                    _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = messages.applyMessageFilters(it.sessionMeta.revertMessageId), isLoading = false)) }
+                    _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(messages), isLoading = false)) }
                 } else {
                     // Turn still in progress (or AI hasn't started responding yet)
                     // Restore full streaming state so the UI shows segments + stop button
                     Log.d(TAG, "Restoring streaming state: segs=${segments.size} pending=${pendingMsgId?.take(8)}")
                     _uiState.update {
                         it.copy(
-                            chatDisplay = it.chatDisplay.copy(messages = messages.applyMessageFilters(it.sessionMeta.revertMessageId), isLoading = false),
+                            chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(messages), isLoading = false),
                             streaming = it.streaming.copy(
                                 isSending = true,
                                 isStreaming = segments.isNotEmpty(),
@@ -344,7 +344,7 @@ class ChatViewModel @Inject constructor(
                 }
             } else {
                 // No streaming state for this session — normal load
-                _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = messages.applyMessageFilters(it.sessionMeta.revertMessageId), isLoading = false)) }
+                _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(messages), isLoading = false)) }
             }
 
             // Compute context usage from loaded messages
@@ -486,7 +486,12 @@ class ChatViewModel @Inject constructor(
         val currentSessionId = _uiState.value.sessionId
 
         // Filter: only process events for current session (or global events without sessionID)
-        if (props.sessionID != null && props.sessionID != currentSessionId) return
+        if (props.sessionID != null && props.sessionID != currentSessionId) {
+            if (event.payload.type == "question.asked") {
+                Log.w(TAG, "SSE DIAG: question.asked DROPPED session=${props.sessionID} != current=$currentSessionId")
+            }
+            return
+        }
 
         // DIAGNOSTIC: Count event types
         val type = event.payload.type
@@ -614,7 +619,7 @@ class ChatViewModel @Inject constructor(
                     viewModelScope.launch {
                         try {
                             val allMessages = repository.getMessages(_uiState.value.sessionId, _uiState.value.sessionDirectory)
-                            _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = allMessages.applyMessageFilters(it.sessionMeta.revertMessageId))) }
+                            _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(allMessages))) }
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to fetch messages after user message.updated", e)
                         }
@@ -678,7 +683,7 @@ class ChatViewModel @Inject constructor(
                                     _uiState.update {
                                         it.copy(
                                             chatDisplay = it.chatDisplay.copy(
-                                                messages = freshMessages.applyMessageFilters(it.sessionMeta.revertMessageId),
+                                                messages = mergeFreshMessages(freshMessages),
                                             ),
                                             streaming = it.streaming.copy(
                                                 isStreaming = false,
@@ -703,7 +708,7 @@ class ChatViewModel @Inject constructor(
 
                             _uiState.update {
                                 it.copy(
-                                    chatDisplay = it.chatDisplay.copy(messages = freshMessages.applyMessageFilters(it.sessionMeta.revertMessageId)),
+                                    chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(freshMessages)),
                                     streaming = it.streaming.copy(
                                         isStreaming = false,
                                         streamingSegments = emptyList(),
@@ -745,7 +750,7 @@ class ChatViewModel @Inject constructor(
                     viewModelScope.launch {
                         try {
                             val fresh = repository.getMessages(_uiState.value.sessionId, _uiState.value.sessionDirectory)
-                            _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = fresh.applyMessageFilters(it.sessionMeta.revertMessageId))) }
+                            _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(fresh))) }
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to refresh messages on idle", e)
                         }
@@ -771,7 +776,7 @@ class ChatViewModel @Inject constructor(
                 viewModelScope.launch {
                     try {
                         val messages = repository.getMessages(_uiState.value.sessionId, _uiState.value.sessionDirectory)
-                        _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = messages.applyMessageFilters(it.sessionMeta.revertMessageId))) }
+                        _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(messages))) }
                         updateContextUsage()
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to reload messages after compaction", e)
@@ -827,11 +832,27 @@ class ChatViewModel @Inject constructor(
 
             // ── Question asked (AI question) ──
             "question.asked" -> {
-                val requestId = props.id ?: return
-                val questions = props.questions ?: return
+                val requestId = props.id ?: run {
+                    Log.w(TAG, "SSE DIAG: question.asked with NULL id")
+                    return
+                }
+                val questions = props.questions
+                if (questions == null) {
+                    Log.w(TAG, "SSE DIAG: question.asked id=$requestId with NULL questions")
+                    return
+                }
                 val sessionId = props.sessionID ?: currentSessionId
-                if (questions.isEmpty()) return
-                Log.d(TAG, "Question asked: id=$requestId questions=${questions.size}")
+                if (questions.isEmpty()) {
+                    Log.w(TAG, "SSE DIAG: question.asked id=$requestId with EMPTY questions")
+                    return
+                }
+                Log.w(TAG, "SSE DIAG: question.asked id=$requestId session=${props.sessionID} questions=${questions.size} tool=${props.tool}")
+                questions.forEachIndexed { i, q ->
+                    Log.w(TAG, "SSE DIAG:   Q$i question='${q.question}' header='${q.header}' options=${q.options.size} custom=${q.custom} multiple=${q.multiple}")
+                    q.options.forEachIndexed { j, o ->
+                        Log.w(TAG, "SSE DIAG:     opt$j label='${o.label}' desc='${o.description}'")
+                    }
+                }
                 val request = QuestionRequestData(
                     id = requestId,
                     sessionID = sessionId,
@@ -1731,6 +1752,10 @@ class ChatViewModel @Inject constructor(
     private fun List<MessageInfo>.applyMessageFilters(revertMessageId: String?): List<MessageInfo> =
         filterReverted(revertMessageId).trimToLatest()
 
+    /** Apply filters (revert hiding + trim) to freshly loaded server messages. */
+    private fun mergeFreshMessages(fresh: List<MessageInfo>): List<MessageInfo> =
+        fresh.applyMessageFilters(_uiState.value.sessionMeta.revertMessageId)
+
     /**
      * Fallback polling: only checks for new messages when SSE appears to have stalled
      * (no events received for 15 seconds). This avoids redundant API calls while SSE
@@ -1760,7 +1785,7 @@ class ChatViewModel @Inject constructor(
                     if (freshLatestId != null && freshLatestId != currentLatestId) {
                         Log.d(TAG, "Fallback polling detected new message: $freshLatestId")
                         val fullMessages = repository.getMessages(_uiState.value.sessionId, _uiState.value.sessionDirectory)
-                        _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = fullMessages.applyMessageFilters(it.sessionMeta.revertMessageId))) }
+                        _uiState.update { it.copy(chatDisplay = it.chatDisplay.copy(messages = mergeFreshMessages(fullMessages))) }
                         updateContextUsage()
                     }
                 } catch (e: Exception) {
@@ -1808,7 +1833,7 @@ class ChatViewModel @Inject constructor(
                                 pendingAssistantMessageId = null,
                             ),
                             chatDisplay = it.chatDisplay.copy(
-                                messages = fresh.applyMessageFilters(it.sessionMeta.revertMessageId),
+                                messages = mergeFreshMessages(fresh),
                             ),
                         )
                     }

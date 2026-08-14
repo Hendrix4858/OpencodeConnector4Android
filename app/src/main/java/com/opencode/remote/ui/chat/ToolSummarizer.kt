@@ -1,6 +1,8 @@
 package com.opencode.remote.ui.chat
 
 import com.opencode.remote.data.api.dto.MessagePart
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -32,9 +34,69 @@ object ToolSummarizer {
             "background_output" -> "📤 background"
             "background_cancel" -> "🚫 cancel"
             "todowrite" -> "📋 todo"
-            "question" -> "❓ question"
+            "question" -> summarizeQuestion(part)
             else -> "🔧 $toolName"
         }
+    }
+
+    /** Render a question tool's content: each question with its options, plus the user's answer
+     *  if present. opencode persists answers in the tool part's `metadata.answers`. */
+    private fun summarizeQuestion(part: MessagePart): String {
+        val input = part.state?.input
+        val questions = try {
+            (input as? JsonObject)?.get("questions") as? JsonArray
+        } catch (_: Exception) {
+            null
+        } ?: return "❓ question"
+        if (questions.isEmpty()) return "❓ question"
+
+        val answers = parseAnswers(part.state?.metadata)
+        val yourAnswer = com.opencode.remote.ui.strings.AppLocale.strings.questionYourAnswer
+
+        val lines = questions.mapIndexedNotNull { index, el ->
+            val obj = el as? JsonObject ?: return@mapIndexedNotNull null
+            val q = (obj["question"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+            val header = (obj["header"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+            val title = when {
+                q != null && header != null -> "$header: $q"
+                header != null -> header
+                else -> q
+            } ?: return@mapIndexedNotNull null
+
+            val options = (obj["options"] as? JsonArray)?.mapNotNull opt@ { opt ->
+                val o = opt as? JsonObject ?: return@opt null
+                val label = (o["label"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() } ?: return@opt null
+                val desc = (o["description"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+                if (desc != null) "  • $label — $desc" else "  • $label"
+            } ?: emptyList()
+
+            val answer = answers?.getOrNull(index)?.filter { it.isNotBlank() }
+
+            buildString {
+                append("❓ ").append(title)
+                options.take(5).forEach { append("\n").append(it) }
+                if (options.size > 5) append("\n  … 另有 ${options.size - 5} 个选项")
+                if (!answer.isNullOrEmpty()) {
+                    append("\n").append(yourAnswer).append(": ").append(answer.joinToString(", "))
+                }
+            }
+        }
+        return if (lines.isEmpty()) "❓ question" else lines.joinToString("\n\n")
+    }
+
+    /** Parse `{ "answers": [["..."], ...] }` from tool metadata into per-question answer lists. */
+    private fun parseAnswers(metadata: JsonElement?): List<List<String>>? {
+        val arr = try {
+            (metadata as? JsonObject)?.get("answers") as? JsonArray
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        if (arr.isEmpty()) return null
+        val result = arr.mapNotNull { el ->
+            val ans = el as? JsonArray ?: return@mapNotNull null
+            ans.mapNotNull { it as? JsonPrimitive }.map { it.content }
+        }
+        return if (result.isEmpty()) null else result
     }
 
     /** Extract a one-line summary from raw tool call text for compact display label.

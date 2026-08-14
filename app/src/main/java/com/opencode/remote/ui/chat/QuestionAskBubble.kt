@@ -23,6 +23,16 @@ internal fun QuestionAskBubble(
     val s = AppLocale.strings
     if (questions.isEmpty()) return
 
+    LaunchedEffect(questions) {
+        android.util.Log.w("QuestionBubble", "DIAG: QuestionAskBubble rendered count=${questions.size}")
+        questions.forEachIndexed { i, q ->
+            android.util.Log.w("QuestionBubble", "DIAG:   Q$i question='${q.question}' header='${q.header}' options=${q.options.size} custom=${q.custom} multiple=${q.multiple}")
+            q.options.forEachIndexed { j, o ->
+                android.util.Log.w("QuestionBubble", "DIAG:     opt$j label='${o.label}' desc='${o.description}'")
+            }
+        }
+    }
+
     var currentIndex by remember(questions) { mutableStateOf(0) }
 
     // Per-question selected options
@@ -42,11 +52,7 @@ internal fun QuestionAskBubble(
     val selectedOptions by selectedOptionsList[currentIndex]
     val customAnswer by customAnswerList[currentIndex]
 
-    val hasAnswer = if (question.options.isNotEmpty()) {
-        selectedOptions.isNotEmpty()
-    } else {
-        customAnswer.isNotBlank()
-    }
+    val hasAnswer = selectedOptions.isNotEmpty() || customAnswer.isNotBlank()
 
     Card(
         modifier = modifier.fillMaxWidth(),
